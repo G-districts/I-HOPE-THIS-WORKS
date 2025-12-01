@@ -93,22 +93,16 @@ def _safe_default_data():
         "settings": {"chat_enabled": False},
         "classes": {
             "period1": {
-                "id": "period1",
                 "name": "Period 1",
                 "active": True,
                 "focus_mode": False,
                 "paused": False,
                 "allowlist": [],
                 "teacher_blocks": [],
-                "students": [],
-                "schedule": {
-                    "enabled": False,
-                    "start": "",
-                    "end": "",
-                    "weekdays_only": False
-                }
+                "students": []
             }
-        },   "categories": {},
+        },
+        "categories": {},
         "pending_commands": {},
         "pending_per_student": {},
         "presence": {},
@@ -193,20 +187,13 @@ def current_user():
 def ensure_keys(d):
     d.setdefault("settings", {}).setdefault("chat_enabled", False)
     d.setdefault("classes", {}).setdefault("period1", {
-        "id": "period1",
         "name": "Period 1",
         "active": True,
         "focus_mode": False,
         "paused": False,
         "allowlist": [],
         "teacher_blocks": [],
-        "students": [],
-        "schedule": {
-            "enabled": False,
-            "start": "",
-            "end": "",
-            "weekdays_only": False
-        }
+        "students": []
     })
     d.setdefault("categories", {})
     d.setdefault("pending_commands", {})
@@ -445,53 +432,136 @@ def teacher_page():
     u = current_user()
     if not u or u["role"] not in ("teacher", "admin"):
         return redirect(url_for("login_page"))
-    d = ensure_keys(load_data())
-    email = (u.get("email") or "").strip()
-    classes = []
-    for cid, cls in (d.get("classes") or {}).items():
-        owner = _normalize_email(cls.get("owner") or cls.get("teacher") or "")
-        if owner and owner != _normalize_email(email):
-            continue
-        meta = dict(cls)
-        meta.setdefault("id", cid)
-        meta.setdefault("name", meta.get("name") or cid)
-        meta["effective_active"] = bool(_effective_class_active(meta))
-        meta["student_count"] = len(meta.get("students") or [])
-        meta["cid"] = cid
-        classes.append(meta)
-    classes.sort(key=lambda c: c.get("name", "").lower())
-    return render_template("teacher_sessions.html", classes=classes, user=u)
+    return render_template("teacher_sessions.html", user=u)
 
 
-
-@app.route("/teacher/session/<cid>")
-def teacher_session_page(cid):
+@app.route("/teacher/session/<class_id>")
+def teacher_session_page(class_id):
     u = current_user()
     if not u or u["role"] not in ("teacher", "admin"):
         return redirect(url_for("login_page"))
+
     d = ensure_keys(load_data())
-    cls = (d.get("classes") or {}).get(cid)
+    cls = (d.get("classes") or {}).get(class_id)
     if not cls:
-        # Fallback to default period1 for old links
-        if cid == "period1":
-            cls = _get_or_create_class(d, "period1", owner_email=u.get("email"))
-            save_data(d)
-        else:
-            return redirect(url_for("teacher_page"))
-    owner = _normalize_email(cls.get("owner") or cls.get("teacher") or "")
-    email = _normalize_email(u.get("email") or "")
-    if owner and owner != email and u.get("role") != "admin":
-        return redirect(url_for("teacher_page"))
-    class_name = cls.get("name") or "Class"
-    class_active = bool(_effective_class_active(cls))
+        abort(404)
+
     return render_template(
-        "teacher_session.html",
-        data=d,
+        "teacher.html",
         user=u,
-        class_id=cid,
-        class_name=class_name,
-        class_active=class_active,
+        data=d,
+        class_id=class_id,
+        class_name=cls.get("name") or class_id,
+        class_active=bool(cls.get("active", True)),
     )
+
+
+
+@app.route("/api/classes")
+def api_classes():
+    """List class sessions for the current teacher account."""
+    u = current_user()
+    if not u or u.get("role") not in ("teacher", "admin"):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    d = ensure_keys(load_data())
+    email = _normalize_email(u.get("email") or "")
+    classes = _classes_for_teacher(d, email)
+    return jsonify({"ok": True, "classes": classes})
+
+
+@app.route("/api/classes/save", methods=["POST"])
+def api_classes_save():
+    """Create or update a class session for the current teacher."""
+    u = current_user()
+    if not u or u.get("role") not in ("teacher", "admin"):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    d = ensure_keys(load_data())
+    b = request.json or {}
+    raw_name = (b.get("name") or "").strip()
+    raw_students = (b.get("students") or "").strip()
+    schedule_in = b.get("schedule") or {}
+
+    if not raw_name:
+        return jsonify({"ok": False, "error": "name_required"}), 400
+
+    owner_email = _normalize_email(u.get("email") or "")
+    classes = d.setdefault("classes", {})
+
+    cid = (b.get("id") or "").strip()
+    if cid:
+        cls = classes.get(cid)
+        if not cls:
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        existing_owner = _normalize_email(cls.get("owner") or cls.get("teacher") or "")
+        if existing_owner and existing_owner != owner_email and u.get("role") != "admin":
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+    else:
+        # generate new id: <teacher_email>::<short_hex>
+        import secrets
+        short = secrets.token_hex(3)
+        cid = f"{owner_email or 'class'}::{short}"
+        cls = {}
+        classes[cid] = cls
+
+    # parse students
+    students = []
+    if raw_students:
+        for part in re.split(r"[\n,;]+", raw_students):
+            e = part.strip()
+            if e:
+                students.append(e)
+
+    # simple schedule model, stored but not strictly enforced yet
+    sched = {
+        "enabled": bool(schedule_in.get("enabled")),
+        "start": (schedule_in.get("start") or "").strip(),
+        "end": (schedule_in.get("end") or "").strip(),
+        "weekdays_only": bool(schedule_in.get("weekdays_only")),
+    }
+
+    cls["name"] = raw_name
+    cls["students"] = students
+    cls["owner"] = owner_email
+    cls.setdefault("active", False)
+    cls["schedule"] = sched
+
+    save_data(d)
+    log_action({"event": "class_save", "id": cid, "name": raw_name, "owner": owner_email})
+    return jsonify({"ok": True, "id": cid})
+
+
+@app.route("/api/classes/delete", methods=["POST"])
+def api_classes_delete():
+    """Delete a class session created by the current teacher."""
+    u = current_user()
+    if not u or u.get("role") not in ("teacher", "admin"):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    d = ensure_keys(load_data())
+    b = request.json or {}
+    cid = (b.get("id") or "").strip()
+    if not cid:
+        return jsonify({"ok": False, "error": "id_required"}), 400
+
+    classes = d.get("classes") or {}
+    cls = classes.get(cid)
+    if not cls:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    owner_email = _normalize_email(u.get("email") or "")
+    existing_owner = _normalize_email(cls.get("owner") or cls.get("teacher") or "")
+    if existing_owner and existing_owner != owner_email and u.get("role") != "admin":
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    classes.pop(cid, None)
+    d["classes"] = classes
+    save_data(d)
+    log_action({"event": "class_delete", "id": cid, "owner": owner_email})
+    return jsonify({"ok": True})
+
+
 @app.route("/logout")
 def logout():
     session.pop("user", None)
@@ -725,15 +795,22 @@ def api_login():
 # =========================
 @app.route("/api/data")
 def api_data():
-    """Compatibility wrapper used by teacher-session UI loadData()."""
-    u = current_user()
-    if not u or u["role"] not in ("teacher", "admin"):
-        return jsonify({"ok": False, "error": "forbidden"}), 403
+    """Compatibility wrapper used by teacher.html's loadData()."""
     d = ensure_keys(load_data())
-    cid = (request.args.get("class_id") or "period1").strip() or "period1"
-    cls = d.get("classes", {}).get(cid) or _get_or_create_class(d, cid, owner_email=u.get("email"))
-    d.setdefault("classes", {})[cid] = cls
-    save_data(d)
+    classes = d.get("classes") or {}
+    cid = request.args.get("class_id") or "period1"
+    cls = classes.get(cid) or classes.get("period1", {}) or {}
+
+    def _cls_payload(c):
+        return {
+            "name": c.get("name", "Graden's Classroom"),
+            "active": bool(c.get("active", True)),
+            "focus_mode": bool(c.get("focus_mode", False)),
+            "paused": bool(c.get("paused", False)),
+            "allowlist": list(c.get("allowlist", [])),
+            "teacher_blocks": list(c.get("teacher_blocks", [])),
+            "students": list(c.get("students", [])),
+        }
 
     return jsonify({
         "settings": {
@@ -745,19 +822,11 @@ def api_data():
             "teacher_allow": get_setting("teacher_allow", []),
         },
         "classes": {
-            cid: {
-                "id": cid,
-                "name": cls.get("name", "Class"),
-                "active": bool(_effective_class_active(cls)),
-                "focus_mode": bool(cls.get("focus_mode", False)),
-                "paused": bool(cls.get("paused", False)),
-                "allowlist": list(cls.get("allowlist", [])),
-                "teacher_blocks": list(cls.get("teacher_blocks", [])),
-                "students": list(cls.get("students", [])),
-                "schedule": cls.get("schedule") or {},
-            }
+            cid: _cls_payload(cls)
         }
     })
+
+
 @app.route("/api/settings", methods=["POST"])
 def api_settings():
     u = current_user()
@@ -939,112 +1008,20 @@ def api_announce():
     log_action({"event": "announce", "message": msg})
     return jsonify({"ok": True})
 
-@app.route("/api/classes/list", methods=["GET"])
-def api_classes_list():
-    u = current_user()
-    if not u or u["role"] not in ("teacher", "admin"):
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-    d = ensure_keys(load_data())
-    email = (u.get("email") or "").strip()
-    items = []
-    for cid, cls in _classes_for_teacher(d, email):
-        meta = dict(cls)
-        meta.setdefault("id", cid)
-        meta.setdefault("name", meta.get("name") or cid)
-        meta["effective_active"] = bool(_effective_class_active(meta))
-        meta["student_count"] = len(meta.get("students") or [])
-        meta["cid"] = cid
-        items.append(meta)
-    items.sort(key=lambda c: c.get("name", "").lower())
-    return jsonify({"ok": True, "classes": items})
-
-
-@app.route("/api/classes/save", methods=["POST"])
-def api_classes_save():
-    u = current_user()
-    if not u or u["role"] not in ("teacher", "admin"):
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-    d = ensure_keys(load_data())
-    body = request.json or {}
-    raw_id = (body.get("id") or "").strip()
-    email = (u.get("email") or "").strip()
-    if raw_id:
-        cid = raw_id
-    else:
-        cid = "cls_" + uuid.uuid4().hex[:8]
-    cls = _get_or_create_class(d, cid, owner_email=email)
-    owner = _normalize_email(cls.get("owner") or email)
-    if owner != _normalize_email(email) and u.get("role") != "admin":
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-
-    # Basic fields
-    if "name" in body:
-        cls["name"] = (body.get("name") or "Class").strip() or "Class"
-    if "active" in body:
-        cls["active"] = bool(body.get("active"))
-    if "students" in body:
-        raw_students = body.get("students") or []
-        if isinstance(raw_students, str):
-            parts = re.split(r"[\s,;\n]+", raw_students)
-            raw_students = [p for p in parts if p]
-        cls["students"] = sorted({_normalize_email(s) for s in raw_students})
-    sched = cls.setdefault("schedule", {})
-    sched_body = body.get("schedule") or {}
-    for k in ("enabled", "weekdays_only"):
-        if k in sched_body:
-            sched[k] = bool(sched_body.get(k))
-    for k in ("start", "end"):
-        if k in sched_body:
-            sched[k] = (sched_body.get(k) or "").strip()
-
-    d["classes"][cid] = cls
-    save_data(d)
-    return jsonify({"ok": True, "class": cls, "id": cid})
-
-
-@app.route("/api/classes/delete", methods=["POST"])
-def api_classes_delete():
-    u = current_user()
-    if not u or u["role"] not in ("teacher", "admin"):
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-    d = ensure_keys(load_data())
-    body = request.json or {}
-    cid = (body.get("id") or "").strip()
-    email = (u.get("email") or "").strip()
-    cls = (d.get("classes") or {}).get(cid)
-    if not cls:
-        return jsonify({"ok": True})
-    owner = _normalize_email(cls.get("owner") or cls.get("teacher") or "")
-    if owner and owner != _normalize_email(email) and u.get("role") != "admin":
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-    d.get("classes", {}).pop(cid, None)
-    save_data(d)
-    return jsonify({"ok": True})
-
-
 @app.route("/api/class/set", methods=["GET", "POST"])
 def api_class_set():
-    u = current_user()
-    if not u or u["role"] not in ("teacher", "admin"):
-        return jsonify({"ok": False, "error": "forbidden"}), 403
     d = ensure_keys(load_data())
 
-    # class id can come from query or body; default to period1 for legacy
-    cid = (request.args.get("class_id") or "").strip()
-    body = request.json or {} if request.method == "POST" else {}
-    if not cid:
-        cid = (body.get("class_id") or "period1").strip() or "period1"
-
-    cls = _get_or_create_class(d, cid, owner_email=u.get("email"))
-    prev_active = bool(cls.get("active", True))
-
     if request.method == "GET":
-        return jsonify({"class": cls, "settings": d.get("settings", {})})
+        cid = request.args.get("class_id") or "period1"
+        cls = d.get("classes", {}).get(cid, {})
+        return jsonify({"class": cls, "settings": d["settings"]})
 
-    # Ownership check
-    owner = _normalize_email(cls.get("owner") or cls.get("teacher") or u.get("email") or "")
-    if owner and owner != _normalize_email(u.get("email") or "") and u.get("role") != "admin":
-        return jsonify({"ok": False, "error": "forbidden"}), 403
+    body = request.json or {}
+    cid = body.get("class_id") or "period1"
+    classes = d.setdefault("classes", {})
+    cls = classes.get(cid, {})
+    prev_active = bool(cls.get("active", True))
 
     if "teacher_blocks" in body:
         set_setting("teacher_blocks", body["teacher_blocks"])
@@ -1060,34 +1037,32 @@ def api_class_set():
 
     if "chat_enabled" in body:
         set_setting("chat_enabled", body["chat_enabled"])
-        d.setdefault("settings", {})["chat_enabled"] = bool(body["chat_enabled"])
+        d["settings"]["chat_enabled"] = bool(body["chat_enabled"])
 
     if "active" in body:
         cls["active"] = bool(body["active"])
-
-    # Optional passcode stays global
     if "passcode" in body and body["passcode"]:
-        d.setdefault("settings", {})["passcode"] = body["passcode"]
+        d["settings"]["passcode"] = body["passcode"]
 
-    d.setdefault("classes", {})[cid] = cls
+    classes[cid] = cls
+    d["classes"] = classes
 
-    if bool(_effective_class_active(cls)) and not bool(_effective_class_active({"active": prev_active, "schedule": cls.get("schedule")})):
+    if bool(cls.get("active", True)) and not prev_active:
         d.setdefault("pending_commands", {}).setdefault("*", []).append({
             "type": "notify",
             "title": "Class session is active",
-            "message": "Please join and stay until dismissed.",
-            "class_id": cid,
+            "message": "Please join and stay until dismissed."
         })
 
     # IMPORTANT: force all extensions to re-fetch policy for new rules
     d.setdefault("pending_commands", {}).setdefault("*", []).append({
-        "type": "policy_refresh",
-        "class_id": cid,
+        "type": "policy_refresh"
     })
 
     save_data(d)
     log_action({"event": "class_set", "class_id": cid, "active": cls.get("active", True)})
-    return jsonify({"ok": True, "class": cls, "settings": d.get("settings", {})})
+    return jsonify({"ok": True, "class": cls, "settings": d["settings"]})
+
 
 @app.route("/api/class/toggle", methods=["POST"])
 def api_class_toggle():
@@ -1097,131 +1072,67 @@ def api_class_toggle():
 
     d = ensure_keys(load_data())
     b = request.json or {}
-    cid = (b.get("class_id") or "period1").strip() or "period1"
+    cid = b.get("class_id", "period1")
     key = b.get("key")
     val = bool(b.get("value"))
 
-    if cid in d.get("classes", {}) and key in ("focus_mode", "paused"):
-        cls = d["classes"][cid]
-        owner = _normalize_email(cls.get("owner") or cls.get("teacher") or u.get("email") or "")
-        if owner and owner != _normalize_email(u.get("email") or "") and u.get("role") != "admin":
-            return jsonify({"ok": False, "error": "forbidden"}), 403
-        cls[key] = val
-        d["classes"][cid] = cls
+    if cid in d["classes"] and key in ("focus_mode", "paused"):
+        d["classes"][cid][key] = val
         save_data(d)
-        log_action({"event": "class_toggle", "class_id": cid, "key": key, "value": val})
+        log_action({"event": "class_toggle", "key": key, "value": val})
         return jsonify({"ok": True, "class": d["classes"][cid]})
 
     return jsonify({"ok": False, "error": "invalid"}), 400
 
+
 # =========================
 # Commands
 # =========================
-
 @app.route("/api/command", methods=["POST"])
 def api_command():
-    """Queue a command for students, scoped by class session.
-
-    - Optional body.class_id selects class; otherwise teacher's current/session or 'period1'.
-    - Commands stored in data['pending_commands_by_class'][class_id][student].
-    - If the class is not effectively active, commands are rejected.
-    """
     u = current_user()
     if not u or u["role"] not in ("teacher", "admin"):
         return jsonify({"ok": False, "error": "forbidden"}), 403
-
     d = ensure_keys(load_data())
     b = request.json or {}
-
-    cid = (b.get("class_id") or "").strip()
-    if not cid:
-        cid = (session.get("current_class_id") or "period1").strip() or "period1"
-
-    classes = d.setdefault("classes", {})
-    cls = classes.get(cid)
-    if not cls:
-        return jsonify({"ok": False, "error": "invalid_class"}), 400
-
-    owner = _normalize_email(cls.get("owner") or cls.get("teacher") or "")
-    email = _normalize_email((u.get("email") or "").strip())
-    if owner and owner != email and u.get("role") != "admin":
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-
-    if not _effective_class_active(cls):
-        return jsonify({"ok": False, "error": "class_inactive"}), 400
-
     target = b.get("student") or "*"
     cmd = b.get("command")
     if not cmd or "type" not in cmd:
         return jsonify({"ok": False, "error": "invalid"}), 400
-
-    by_class = d.setdefault("pending_commands_by_class", {})
-    per_class = by_class.setdefault(cid, {})
-    per_class.setdefault(target, []).append(cmd)
-
+    d.setdefault("pending_commands", {}).setdefault(target, []).append(cmd)
     save_data(d)
-    log_action({"event": "command", "target": target, "type": cmd.get("type"), "class_id": cid})
+    log_action({"event": "command", "target": target, "type": cmd.get("type")})
     return jsonify({"ok": True})
-
-
 
 @app.route("/api/commands/<student>", methods=["GET", "POST"])
 def api_commands(student):
-    """Return and clear pending commands for a student.
-
-    - Optional query param class_id scopes commands to a specific class session.
-    - When class_id is present, uses data['pending_commands_by_class'][class_id].
-    - Without class_id, retains legacy global behaviour via data['pending_commands'].
-    """
     d = ensure_keys(load_data())
-    cid = (request.args.get("class_id") or "").strip()
 
-    if cid:
-        by_class = d.get("pending_commands_by_class", {}) or {}
-        per_class = by_class.get(cid, {})
-        if request.method == "GET":
-            cmds = list(per_class.get(student, [])) + list(per_class.get("*", []))
-            per_class[student] = []
-            per_class["*"] = []
-            by_class[cid] = per_class
-            d["pending_commands_by_class"] = by_class
-            save_data(d)
-            return jsonify({"commands": cmds})
-        else:
-            u = current_user()
-            if not u or u["role"] not in ("teacher", "admin"):
-                return jsonify({"ok": False, "error": "forbidden"}), 403
-            b = request.json or {}
-            if not b.get("type"):
-                return jsonify({"ok": False, "error": "missing type"}), 400
-            per_class.setdefault(student, []).append(b)
-            by_class[cid] = per_class
-            d["pending_commands_by_class"] = by_class
-            save_data(d)
-            log_action({"event": "command_sent", "to": student, "cmd": b.get("type"), "class_id": cid})
-            return jsonify({"ok": True})
-
-    # Legacy behaviour (no class_id)
     if request.method == "GET":
-        cmds = d.setdefault("pending_commands", {}).get(student, []) + d["pending_commands"].get("*", [])
+        cmds = d["pending_commands"].get(student, []) + d["pending_commands"].get("*", [])
         d["pending_commands"][student] = []
         d["pending_commands"]["*"] = []
         save_data(d)
         return jsonify({"commands": cmds})
 
+    # POST (push from teacher)
     u = current_user()
     if not u or u["role"] not in ("teacher", "admin"):
         return jsonify({"ok": False, "error": "forbidden"}), 403
+
     b = request.json or {}
     if not b.get("type"):
         return jsonify({"ok": False, "error": "missing type"}), 400
 
-    d.setdefault("pending_commands", {}).setdefault(student, []).append(b)
+    d["pending_commands"].setdefault(student, []).append(b)
     save_data(d)
     log_action({"event": "command_sent", "to": student, "cmd": b.get("type")})
     return jsonify({"ok": True})
 
 
+# =========================
+# Off-task Check (simple)
+# =========================
 @app.route("/api/offtask/check", methods=["POST"])
 def api_offtask_check():
     b = request.json or {}
@@ -1362,35 +1273,17 @@ def api_heartbeat():
         "extension_enabled": bool(extension_enabled_global)
     })
 
-
 @app.route("/api/presence")
 def api_presence():
     u = current_user()
     if not u or u["role"] not in ("teacher", "admin"):
         return jsonify({"ok": False, "error": "forbidden"}), 403
-
-    d = ensure_keys(load_data())
-    all_presence = d.get("presence", {}) or {}
-
-    cid = (request.args.get("class_id") or "").strip()
-    if not cid:
-        # Legacy: return global presence
-        return jsonify(all_presence)
-
-    cls = (d.get("classes") or {}).get(cid)
-    if not cls or not _effective_class_active(cls):
-        # Hard enforcement: no presence when class is inactive
-        return jsonify({})
-
-    roster = set(_normalize_email(s) for s in (cls.get("students") or []))
-    filtered = {}
-    for student, info in all_presence.items():
-        if _normalize_email(student) in roster:
-            filtered[student] = info
-
-    return jsonify(filtered)
+    return jsonify(load_data().get("presence", {}))
 
 
+# =========================
+# Extension Global Toggle
+# =========================
 @app.route("/api/extension/toggle", methods=["POST"])
 def api_extension_toggle():
     """Toggle all student extensions (remote control by teacher/admin)."""
@@ -1417,98 +1310,6 @@ def api_extension_toggle():
 # =========================
 # Policy helpers
 # =========================
-
-
-# =========================
-# Class/session helpers (multi-session support)
-# =========================
-
-def _normalize_email(s):
-    return (s or "").strip().lower()
-
-
-def _effective_class_active(cls):
-    """Return True if class is logically active (flag + optional schedule)."""
-    if not cls:
-        return False
-    if not bool(cls.get("active", True)):
-        return False
-    sched = (cls.get("schedule") or {})
-    if not sched.get("enabled"):
-        return True
-    # Reuse policy schedule helper by faking a policy object
-    fake_policy = {
-        "active": True,
-        "schedule": {
-            "enabled": True,
-            "start": sched.get("start"),
-            "end": sched.get("end"),
-            "weekdays_only": bool(sched.get("weekdays_only")),
-        },
-    }
-    return _is_policy_schedule_active(fake_policy)
-
-
-def _classes_for_teacher(data, teacher_email):
-    """Return list of (class_id, cls) tuples belonging to a teacher."""
-    em = _normalize_email(teacher_email)
-    classes = []
-    for cid, cls in (data.get("classes") or {}).items():
-        owner = _normalize_email(cls.get("owner") or cls.get("teacher") or "")
-        if owner and owner != em:
-            continue
-        # If no explicit owner, treat as belonging to everyone/admin
-        classes.append((cid, cls))
-    return classes
-
-
-def _classes_for_student(data, student_email):
-    """Return list of metadata dicts for classes that include this student email."""
-    em = _normalize_email(student_email)
-    if not em:
-        return []
-    results = []
-    for cid, cls in (data.get("classes") or {}).items():
-        roster = [ _normalize_email(s) for s in (cls.get("students") or []) ]
-        if em not in roster:
-            continue
-        meta = {
-            "id": cid,
-            "name": cls.get("name") or cid,
-            "active": bool(_effective_class_active(cls)),
-            "schedule_enabled": bool((cls.get("schedule") or {}).get("enabled")),
-            "owner": cls.get("owner") or cls.get("teacher") or "",
-        }
-        results.append(meta)
-    return results
-
-
-def _get_or_create_class(data, cid, owner_email=None):
-    """Fetch a class by id, creating it with sensible defaults if missing."""
-    classes = data.setdefault("classes", {})
-    cls = classes.get(cid)
-    if not cls:
-        cls = {
-            "id": cid,
-            "name": "Class",
-            "active": True,
-            "focus_mode": False,
-            "paused": False,
-            "allowlist": [],
-            "teacher_blocks": [],
-            "students": [],
-            "schedule": {
-                "enabled": False,
-                "start": "",
-                "end": "",
-                "weekdays_only": False,
-            },
-        }
-        if owner_email:
-            cls["owner"] = owner_email
-        classes[cid] = cls
-    return cls
-
 
 def _parse_hhmm(s):
     """Minimal HH:MM parser -> (hour, minute) or (None, None)"""
@@ -1582,6 +1383,103 @@ def _is_policy_schedule_active(policy, now_ts=None):
 
     # Overnight window (e.g. 22:00–06:00)
     return cur_min >= start_min or cur_min < end_min
+
+def _normalize_email(email):
+    """Normalize emails for comparison: lowercase + strip spaces."""
+    if not isinstance(email, str):
+        return ""
+    return email.strip().lower()
+
+
+def _effective_class_active(cls, now_ts=None):
+    """Return True if the class is effectively active.
+
+    Right now we only look at the class's own `active` flag. The hook
+    is here so that an optional `schedule` can be added later.
+    """
+    if not cls:
+        return False
+    # If 'active' is explicitly False, always inactive.
+    if not cls.get("active", True):
+        return False
+
+    # If a schedule is present, we could enforce it here (future work).
+    # For now, just mirror the manual active flag.
+    return True
+
+
+def _classes_for_student(data, student_email):
+    """Return a list of class metadata objects for a given student.
+
+    Each item: {id, cid, name, active, student_count, schedule_enabled, students}
+    """
+    out = []
+    data = ensure_keys(data or {})
+    classes = data.get("classes") or {}
+    norm_student = _normalize_email(student_email)
+    for cid, cls in classes.items():
+        try:
+            students = cls.get("students") or []
+        except Exception:
+            students = []
+        roster = [_normalize_email(s) for s in students if s]
+        if norm_student and norm_student not in roster:
+            continue
+        meta = {
+            "id": cid,
+            "cid": cid,
+            "name": cls.get("name") or cid,
+            "active": bool(_effective_class_active(cls)),
+            "student_count": len(roster),
+            "schedule_enabled": bool((cls.get("schedule") or {}).get("enabled")),
+            "schedule": cls.get("schedule") or {},
+            "students": students,
+        }
+        out.append(meta)
+    return out
+
+
+def _classes_for_teacher(data, teacher_email):
+    """Return a list of classes owned by this teacher.
+
+    Ownership is determined by class['owner'] or class['teacher'] matching
+    the teacher's normalized email. The legacy 'period1' class is included
+    if it has no owner set.
+    """
+    out = []
+    data = ensure_keys(data or {})
+    classes = data.get("classes") or {}
+    norm_teacher = _normalize_email(teacher_email)
+
+    for cid, cls in classes.items():
+        owner = _normalize_email(cls.get("owner") or cls.get("teacher") or "")
+        # Include legacy period1 if no explicit owner is set
+        if cid == "period1" and not owner:
+            owner_ok = True
+        else:
+            owner_ok = bool(norm_teacher and owner == norm_teacher)
+        if not owner_ok:
+            continue
+
+        try:
+            students = cls.get("students") or []
+        except Exception:
+            students = []
+        roster = [_normalize_email(s) for s in students if s]
+
+        meta = {
+            "id": cid,
+            "cid": cid,
+            "name": cls.get("name") or cid,
+            "active": bool(_effective_class_active(cls)),
+            "student_count": len(roster),
+            "schedule_enabled": bool((cls.get("schedule") or {}).get("enabled")),
+            "students": students,
+        }
+        out.append(meta)
+    return out
+
+
 def _select_active_policy(data, student_email):
     """Determine the highest-priority policy that applies to this student.
 
@@ -1716,54 +1614,16 @@ def _apply_policy_to_lists(base_allow, base_blocks, base_categories, policy):
 
 
 
-
 @app.route("/api/policy", methods=["POST"])
 def api_policy():
-    """Return effective policy + class/session info for a student.
-
-    Called by the Chrome extension. Now supports multi-class sessions:
-    - Accepts optional body.class_id.
-    - If missing, chooses the first active class containing the student,
-      then the first matching class, then falls back to 'period1'.
-    - focus/paused and teacher_blocks/allowlist come from the selected class.
-    - If the selected class is not effectively active (flag+schedule),
-      focus/paused are forced False and active flag returned False so
-      the UI/extension can show "start class session".
-    """
     b = request.json or {}
     student = (b.get("student") or "").strip()
-    requested_cid = (b.get("class_id") or "").strip()
-
     d = ensure_keys(load_data())
-    classes_dict = d.get("classes") or {}
 
-    def _resolve_class(cid):
-        if not cid:
-            return (None, None)
-        cls = classes_dict.get(cid)
-        if not cls:
-            return (None, None)
-        return (cid, cls)
+    # Class config (single default class)
+    cls = (d.get("classes") or {}).get("period1", {})
 
-    # 1) If caller asked for a specific class_id, honor it if present.
-    cid, cls = _resolve_class(requested_cid)
-
-    # 2) Otherwise, auto-select based on student roster.
-    if not cls and student:
-        meta_list = _classes_for_student(d, student)
-        active_meta = [m for m in meta_list if m.get("active")]
-        chosen = active_meta[0] if active_meta else (meta_list[0] if meta_list else None)
-        if chosen:
-            cid, cls = _resolve_class(chosen.get("id"))
-
-    # 3) Fallback: legacy period1.
-    if not cls:
-        cid = "period1"
-        cls = classes_dict.get("period1") or {}
-
-    effective_active = bool(_effective_class_active(cls))
-
-    # Base flags from class
+    # Base flags
     focus = bool(cls.get("focus_mode", False))
     paused = bool(cls.get("paused", False))
 
@@ -1773,18 +1633,32 @@ def api_policy():
         focus = bool(ov.get("focus_mode", focus))
         paused = bool(ov.get("paused", paused))
 
-    # Scenes (global + per-student)
-    store = d.get("scenes", {}) or {}
-    current_list = []
-    base_current = []
-    per_student_list = []
+    # Per-student pending items (open_tabs etc)
+    pending = []
+    if student:
+        pending_all = d.get("pending_per_student", {}) or {}
+        pend = pending_all.get(student, []) or []
+        if pend:
+            pending = pend
+            pending_all.pop(student, None)
+            d["pending_per_student"] = pending_all
+            save_data(d)
 
-    try:
-        base_current = list(store.get("current", []) or [])
-    except Exception:
+    # Scene merge logic
+    store = _load_scenes()
+    current_raw = store.get("current") or []
+
+    # Global scenes applied to the whole class
+    if isinstance(current_raw, dict):
+        base_current = [current_raw]
+    elif isinstance(current_raw, list):
+        base_current = [c for c in current_raw if c]
+    else:
         base_current = []
 
-    student_scenes_map = d.get("student_scenes", {}) or {}
+    # Optional per‑student scenes stored in data.json
+    student_scenes_map = d.get("student_scenes") or {}
+    per_student_list = []
     if student and student in student_scenes_map:
         raw_list = student_scenes_map.get(student) or []
         for c in raw_list:
@@ -1796,6 +1670,7 @@ def api_policy():
                 "type": c.get("type"),
             })
 
+    # Combine global + per‑student scenes, de‑duplicated by id
     combined = []
     seen_ids = set()
     for src in (base_current, per_student_list):
@@ -1827,41 +1702,35 @@ def api_policy():
                     scene_index[sid] = s
 
         for cur in current_list:
-            sid = str(cur.get("id"))
-            scene = scene_index.get(sid)
-            if not scene:
+            scene_obj = scene_index.get(str(cur.get("id")))
+            if not scene_obj:
                 continue
-            if scene.get("type") == "allowed":
-                allowlist = list(allowlist) + list(scene.get("allow", []))
+            if scene_obj.get("type") == "allowed":
+                allowlist = list(allowlist) + list(scene_obj.get("allow", []))
                 focus = True
-            elif scene.get("type") == "blocked":
-                teacher_blocks = list(teacher_blocks) + list(scene.get("block", []))
+            elif scene_obj.get("type") == "blocked":
+                teacher_blocks = list(teacher_blocks) + list(scene_obj.get("block", []))
 
-        # Deduplicate allowlist
+        # Dedup
         seen = set()
-        dedup = []
+        dedup_allow = []
         for url in allowlist:
             if url not in seen:
                 seen.add(url)
-                dedup.append(url)
-        allowlist = dedup
+                dedup_allow.append(url)
+        allowlist = dedup_allow
 
-        # Deduplicate teacher_blocks
         seen = set()
-        dedup = []
+        dedup_blocks = []
         for url in teacher_blocks:
             if url not in seen:
                 seen.add(url)
-                dedup.append(url)
-        teacher_blocks = dedup
+                dedup_blocks.append(url)
+        teacher_blocks = dedup_blocks
 
-    # If class is not effectively active, clear focus/paused.
-    if not effective_active:
-        focus = False
-        paused = False
-
-    # Policy selection remains unchanged
+    # Which policy applies?
     active_policy = _select_active_policy(d, student)
+
     ap = None
     if active_policy:
         ap = {
@@ -1874,12 +1743,6 @@ def api_policy():
             "schedule": active_policy.get("schedule") or {},
         }
 
-    # Collect pending announcements and open_tabs (existing behaviour)
-    pending = []
-    for it in d.get("pending_commands", {}).get(student, []):
-        if it.get("type") in ("notify", "open_tabs"):
-            pending.append(it)
-
     scenes_current = current_list
 
     resp = {
@@ -1891,9 +1754,9 @@ def api_policy():
         "paused": bool(paused),
         "announcement": d.get("announcements", ""),
         "class": {
-            "id": cid,
+            "id": "period1",
             "name": cls.get("name", "Period 1"),
-            "active": bool(effective_active),
+            "active": bool(cls.get("active", True)),
         },
         "allowlist": allowlist,
         "teacher_blocks": teacher_blocks,
@@ -1904,11 +1767,6 @@ def api_policy():
         "bypass_enabled": bool(d.get("settings", {}).get("bypass_enabled", False)),
         "bypass_ttl_minutes": int(d.get("settings", {}).get("bypass_ttl_minutes", 10)),
     }
-
-    # Include metadata of all classes this student belongs to
-    if student:
-        resp["classes"] = _classes_for_student(d, student)
-
     return jsonify(resp)
 
 
@@ -2122,46 +1980,32 @@ def api_timeline():
         out.sort(key=lambda x: x.get("ts", 0), reverse=True)
     return jsonify({"ok": True, "items": out[-limit:]})
 
-
 @app.route("/api/screenshots", methods=["GET"])
 def api_screenshots():
     u = current_user()
     if not u or u["role"] not in ("teacher", "admin"):
         return jsonify({"ok": False, "error": "forbidden"}), 403
-
     d = ensure_keys(load_data())
-    cid = (request.args.get("class_id") or "").strip()
     student = (request.args.get("student") or "").strip()
     limit = max(1, min(int(request.args.get("limit", 100)), 500))
-
-    roster = None
-    if cid:
-        cls = (d.get("classes") or {}).get(cid)
-        if not cls or not _effective_class_active(cls):
-            return jsonify({"ok": True, "items": []})
-        roster = set(_normalize_email(s) for s in (cls.get("students") or []))
-
     items = []
 
     if student:
-        norm = _normalize_email(student)
-        if roster is not None and norm not in roster:
-            items = []
-        else:
-            items = list((d.get("screenshots", {}) or {}).get(student, []))
-            for it in items:
-                it.setdefault("student", student)
+        items = list(d.get("screenshots", {}).get(student, []))
+        for it in items:
+            it.setdefault("student", student)
     else:
         for s, arr in (d.get("screenshots", {}) or {}).items():
-            if roster is not None and _normalize_email(s) not in roster:
-                continue
             for e in arr:
                 items.append(dict(e, student=s))
+        items.sort(key=lambda x: x.get("ts", 0), reverse=True)
 
-    items.sort(key=lambda x: x.get("ts", 0), reverse=True)
     return jsonify({"ok": True, "items": items[-limit:]})
 
 
+# =========================
+# Alerts (Off-task)
+# =========================
 @app.route("/api/alerts", methods=["GET", "POST"])
 def api_alerts():
     d = ensure_keys(load_data())
@@ -2709,47 +2553,15 @@ def api_student_set():
     log_action({"event": "student_set", "student": student, "focus_mode": ov.get("focus_mode"), "paused": ov.get("paused")})
     return jsonify({"ok": True, "overrides": ov})
 
-
 @app.route("/api/open_tabs", methods=["POST"])
 def api_open_tabs_alias():
     b = request.json or {}
     urls = b.get("urls") or []
     student = (b.get("student") or "").strip()
-    cid = (b.get("class_id") or "").strip()
-
     if not urls:
         return jsonify({"ok": False, "error": "urls required"}), 400
 
-    d = ensure_keys(load_data())
-
-    if cid:
-        cls = (d.get("classes") or {}).get(cid)
-        if not cls or not _effective_class_active(cls):
-            return jsonify({"ok": False, "error": "class_inactive"}), 400
-        roster = set(_normalize_email(s) for s in (cls.get("students") or []))
-
-        d.setdefault("pending_per_student", {})
-        pend = d["pending_per_student"]
-
-        if student:
-            if _normalize_email(student) not in roster:
-                return jsonify({"ok": False, "error": "student_not_in_class"}), 400
-            arr = pend.setdefault(student, [])
-            arr.append({"type": "open_tabs", "urls": urls, "ts": int(time.time())})
-            arr[:] = arr[-50:]
-            log_action({"event": "student_tabs", "student": student, "type": "open_tabs", "count": len(urls)})
-        else:
-            # broadcast to all students in this class
-            for s in roster:
-                arr = pend.setdefault(s, [])
-                arr.append({"type": "open_tabs", "urls": urls, "ts": int(time.time())})
-                arr[:] = arr[-50:]
-                log_action({"event": "student_tabs", "student": s, "type": "open_tabs", "count": len(urls)})
-        save_data(d)
-        return jsonify({"ok": True})
-
-    # Legacy behaviour (no class id)
-    d = ensure_keys(load_data())
+    d = load_data()
     d.setdefault("pending_commands", {})
     if student:
         pend = d.setdefault("pending_per_student", {})
@@ -2759,10 +2571,9 @@ def api_open_tabs_alias():
         log_action({"event": "student_tabs", "student": student, "type": "open_tabs", "count": len(urls)})
     else:
         d["pending_commands"].setdefault("*", []).append({"type": "open_tabs", "urls": urls, "ts": int(time.time())})
-        log_action({"event": "student_tabs", "student": "*", "type": "open_tabs", "count": len(urls)})
+        log_action({"event": "class_tabs", "target": "*", "type": "open_tabs", "count": len(urls)})
     save_data(d)
     return jsonify({"ok": True})
-
 
 @app.route("/api/student/tabs_action", methods=["POST"])
 def api_student_tabs_action():
