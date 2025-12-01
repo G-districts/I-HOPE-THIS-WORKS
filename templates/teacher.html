@@ -448,6 +448,14 @@
       <button class="btn" id="offTaskApply">Apply</button>
     </div>
 
+
+    <div id="inactiveOverlay" style="display:none; margin-top:12px;">
+      <article class="card" style="text-align:center; padding:24px 16px;">
+        <h3 style="margin-bottom:8px;">Class session inactive</h3>
+        <p style="margin:0; font-size:14px;">START CLASS SESSION TO VIEW STUDENT SCREENS.</p>
+      </article>
+    </div>
+
     <section id="panels" style="margin-top:8px">
       <div id="panel-screens"></div>
 
@@ -729,6 +737,10 @@
 </div>
 
 <script>
+const CLASS_ID = "{{ class_id|default('period1') }}";
+const CLASS_NAME = "{{ class_name|default('Graden\'s Classroom') }}";
+const CLASS_ACTIVE_INITIAL = {{ "true" if (class_active is defined and class_active) else "false" }};
+
 /* -----------------------------------------------------------
    Utilities
 ----------------------------------------------------------- */
@@ -786,13 +798,16 @@ const state = {
    Load initial class data
 ----------------------------------------------------------- */
 async function loadData(){
-  const j=await (await fetch('/api/data')).json();
-  $('#focus').checked=j.classes.period1.focus_mode; 
-  $('#paused').checked=j.classes.period1.paused;
-  $('#chatEnabled').checked=j.settings.chat_enabled; 
-  $('#active').checked=j.classes.period1.active;
-  $('#classTitle').textContent = j.classes.period1.name || 'MEGACLASS';
+  const j = await (await fetch('/api/data?class_id='+encodeURIComponent(CLASS_ID))).json();
+  const cls = (j.classes && (j.classes[CLASS_ID] || j.classes.period1)) || {};
+  $('#focus').checked = !!cls.focus_mode; 
+  $('#paused').checked = !!cls.paused;
+  $('#chatEnabled').checked = !!j.settings.chat_enabled; 
+  $('#active').checked = !!cls.active;
+  $('#classTitle').textContent = cls.name || CLASS_NAME || 'MEGACLASS';
   $('#updateTime').textContent = 'Update Time';
+  const overlayInactive = document.getElementById('inactiveOverlay');
+  if (overlayInactive) overlayInactive.style.display = cls.active ? 'none' : 'flex';
 }
 loadData();
 
@@ -978,9 +993,9 @@ function openStudent(student, info){
    Session buttons / class settings
 ----------------------------------------------------------- */
 $('#saveClass').onclick=async()=>{
-  await fetch('/api/class/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:'period1',key:'focus_mode',value:$('#focus').checked})});
-  await fetch('/api/class/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:'period1',key:'paused',value:$('#paused').checked})});
-  await fetch('/api/class/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({active:$('#active').checked, chat_enabled:$('#chatEnabled').checked})});
+  await fetch('/api/class/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:CLASS_ID,key:'focus_mode',value:$('#focus').checked})});
+  await fetch('/api/class/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:CLASS_ID,key:'paused',value:$('#paused').checked})});
+  await fetch('/api/class/set?class_id='+encodeURIComponent(CLASS_ID)+',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:CLASS_ID, active:$('#active').checked, chat_enabled:$('#chatEnabled').checked})});
   toast('Class settings updated');
 };
 $('#announceBtn').onclick=async()=>{ const msg=prompt('Announcement'); if(msg!=null){ await fetch('/api/announce',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})}); toast('Announcement sent'); } };
@@ -1013,7 +1028,7 @@ $('#openTabsSend').onclick=async()=>{
 $('#focusBtn').onclick = async ()=>{
   const box=$('#focus'); box.checked=!box.checked; showOverlay();
   try{
-    await fetch('/api/class/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:'period1',key:'focus_mode',value:box.checked})});
+    await fetch('/api/class/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:CLASS_ID,key:'focus_mode',value:box.checked})});
     const res=await fetch('/api/presence'); if(res.ok){
       const pres=await res.json();
       for(const s of Object.keys(pres)){
@@ -1026,7 +1041,7 @@ $('#focusBtn').onclick = async ()=>{
 $('#pauseBtn').onclick = async ()=>{
   const box=$('#paused'); box.checked=!box.checked; showOverlay();
   try{
-    await fetch('/api/class/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:'period1',key:'paused',value:box.checked})});
+    await fetch('/api/class/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:CLASS_ID,key:'paused',value:box.checked})});
     const res=await fetch('/api/presence'); if(res.ok){
       const pres=await res.json();
       for(const s of Object.keys(pres)){
@@ -1323,7 +1338,7 @@ document.getElementById('saveDoodles').onclick = async ()=>{
 };
 document.getElementById('applyChat').onclick = async ()=>{
   const enabled = document.getElementById('chatEnabled').checked;
-  await fetch('/api/class/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_enabled: enabled})});
+  await fetch('/api/class/set?class_id='+encodeURIComponent(CLASS_ID)+',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({class_id:CLASS_ID, chat_enabled: enabled})});
   alert("Chat has been " + (enabled ? "enabled" : "disabled"));
 };
 
