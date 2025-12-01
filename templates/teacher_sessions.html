@@ -1,204 +1,290 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Class Sessions · G School</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-<style>
-  body{background:#f6f8fb;}
-  main{max-width:1100px;margin:32px auto;padding:0 16px;}
-  header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;}
-  .sessions-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;}
-  .card{background:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 4px 14px rgba(0,0,0,.04);border:1px solid #e5e7eb;}
-  .chip{display:inline-flex;align-items:center;border-radius:999px;font-size:12px;padding:2px 8px;margin-right:4px;}
-  .chip-active{background:#e0f2fe;color:#0369a1;}
-  .chip-inactive{background:#f3f4f6;color:#4b5563;}
-  .chip-count{background:#fef3c7;color:#92400e;}
-  .muted{color:#6b7280;font-size:13px;}
-  .top-row{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
-  .title{font-weight:600;font-size:16px;margin:0;}
-  .btn-sm{font-size:13px;padding:4px 10px;border-radius:999px;border:none;cursor:pointer;background:#0b57d0;color:white;}
-  .btn-sm.secondary{background:#e5e7eb;color:#111827;}
-  .tagline{font-size:13px;color:#4b5563;margin-top:4px;}
-  dialog{max-width:480px;width:100%;}
-  textarea{min-height:72px;}
-  a.btn-sm{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;}
-</style>
-</head>
-<body>
-<main>
-  <header>
-    <div>
-      <h2>Class sessions</h2>
-      <p class="muted">Choose a class to monitor or create a new class session.</p>
-    </div>
-    <button class="btn-sm" id="newClassBtn">+ New class session</button>
-  </header>
-
-  <section>
-    <div id="emptyState" class="muted" style="display:none;">
-      No class sessions yet. Click “New class session” to get started.
-    </div>
-    <div class="sessions-grid" id="sessionsGrid"></div>
-  </section>
-</main>
-
-<dialog id="classDialog">
-  <article>
+  <head>
+    <meta charset="utf-8" />
+    <title>G Schools – Class Sessions</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='pico.classless.min.css') }}">
+    <style>
+      body {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+      header h1 {
+        margin-bottom: 0;
+      }
+      header p {
+        margin-top: 4px;
+        color: #666;
+      }
+      .sessions-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+        margin-top: 16px;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .badge-active {
+        background: #e2fbe2;
+        color: #226622;
+      }
+      .badge-inactive {
+        background: #f3f3f3;
+        color: #666;
+      }
+      .badge-count {
+        background: #eef2ff;
+        color: #3730a3;
+        margin-left: 8px;
+      }
+      .card-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .card-footer button,
+      .card-footer a {
+        flex: 1 1 0;
+        text-align: center;
+        white-space: nowrap;
+      }
+      #emptyState {
+        margin-top: 32px;
+        padding: 24px 16px;
+        border-radius: 12px;
+        border: 1px dashed #ccc;
+        text-align: center;
+      }
+      dialog form {
+        min-width: 320px;
+      }
+      textarea {
+        min-height: 80px;
+      }
+      .muted {
+        font-size: 13px;
+        color: #666;
+      }
+    </style>
+  </head>
+  <body>
     <header>
-      <h3 id="dlgTitle">New class session</h3>
+      <h1>Class sessions</h1>
+      <p>Choose or create a class session. Each session can have its own name and student roster.</p>
     </header>
-    <label>
-      Class name
-      <input id="clsName" type="text" placeholder="e.g. Period 1 · ELA" required />
-    </label>
-    <label>
-      Student emails (one per line or comma separated)
-      <textarea id="clsStudents" placeholder="student1@example.com&#10;student2@example.com"></textarea>
-    </label>
-    <details>
-      <summary>Schedule (optional)</summary>
-      <label><input type="checkbox" id="schedEnabled"> Enable scheduled times</label>
-      <label>Start time (HH:MM)<input id="schedStart" type="time"></label>
-      <label>End time (HH:MM)<input id="schedEnd" type="time"></label>
-      <label><input type="checkbox" id="schedWeekdays"> Weekdays only</label>
-    </details>
-    <footer style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
-      <div>
-        <button class="btn-sm secondary" id="dlgCancel" type="button">Cancel</button>
+
+    <main>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:8px;">
+        <button id="newSessionBtn">New class session</button>
+        <span class="muted">Signed in as {{ user.email }}</span>
       </div>
-      <div>
-        <button class="btn-sm secondary" id="dlgDelete" type="button" style="display:none;">Delete</button>
-        <button class="btn-sm" id="dlgSave" type="button">Save</button>
+
+      <div id="emptyState" hidden>
+        <h3>No class sessions yet</h3>
+        <p>Create your first session to get started. You can reuse it every day.</p>
+        <button id="emptyNewBtn">Create class session</button>
       </div>
-    </footer>
-  </article>
-</dialog>
 
-<script>
-const grid = document.getElementById('sessionsGrid');
-const emptyState = document.getElementById('emptyState');
-const dialogEl = document.getElementById('classDialog');
-const dlgTitle = document.getElementById('dlgTitle');
-const clsName = document.getElementById('clsName');
-const clsStudents = document.getElementById('clsStudents');
-const schedEnabled = document.getElementById('schedEnabled');
-const schedStart = document.getElementById('schedStart');
-const schedEnd = document.getElementById('schedEnd');
-const schedWeekdays = document.getElementById('schedWeekdays');
-const dlgCancel = document.getElementById('dlgCancel');
-const dlgDelete = document.getElementById('dlgDelete');
-const dlgSave = document.getElementById('dlgSave');
-const newClassBtn = document.getElementById('newClassBtn');
+      <section id="sessionsList" class="sessions-grid"></section>
+    </main>
 
-let editingId = null;
+    <dialog id="sessionDialog">
+      <article>
+        <header>
+          <h2 id="dialogTitle">New class session</h2>
+        </header>
+        <form id="sessionForm">
+          <input type="hidden" id="sessionId">
+          <label>
+            Class name
+            <input id="sessionName" type="text" required placeholder="Example: Period 1 – ELA">
+          </label>
 
-async function loadSessions(){
-  const res = await fetch('/api/classes');
-  if(!res.ok) return;
-  const j = await res.json();
-  if(!j.ok){ return; }
-  const classes = j.classes || [];
-  grid.innerHTML = '';
-  if(!classes.length){
-    emptyState.style.display = 'block';
-    return;
-  }
-  emptyState.style.display = 'none';
-  classes.forEach(cls => {
-    const card = document.createElement('article');
-    card.className = 'card';
-    const active = cls.effective_active;
-    const count = cls.student_count || 0;
-    card.innerHTML = `
-      <div class="top-row">
-        <div>
-          <h3 class="title">${cls.name || 'Class'}</h3>
-          <div style="margin-top:4px;">
-            <span class="chip ${active ? 'chip-active' : 'chip-inactive'}">
-              ${active ? 'Active now' : 'Inactive'}
-            </span>
-            <span class="chip chip-count">${count} students</span>
-          </div>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
-          <button class="btn-sm secondary" data-edit="${cls.cid}">Edit</button>
-          <a href="/teacher/session/${encodeURIComponent(cls.cid)}" class="btn-sm">Open</a>
-        </div>
-      </div>
-      <p class="tagline">${cls.schedule_enabled ? 'Scheduled session' : 'Manual start/stop session'}</p>
-    `;
-    grid.appendChild(card);
-  });
+          <label>
+            Student emails
+            <textarea id="sessionStudents" placeholder="One email per line, or separated by commas"></textarea>
+            <span class="muted">Only these students’ screens will be shown when this session is active.</span>
+          </label>
 
-  // wire edit buttons
-  grid.querySelectorAll('[data-edit]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-edit');
-      const found = (classes || []).find(c => c.cid === id || c.id === id);
-      openDialog(found || null);
-    });
-  });
-}
+          <fieldset>
+            <legend>Optional schedule (stored only)</legend>
+            <label>
+              <input id="schedEnabled" type="checkbox">
+              Enable schedule for this session
+            </label>
+            <div style="display:flex; gap:8px; margin-top:4px;">
+              <label style="flex:1;">
+                Start time
+                <input id="schedStart" type="time">
+              </label>
+              <label style="flex:1;">
+                End time
+                <input id="schedEnd" type="time">
+              </label>
+            </div>
+            <label>
+              <input id="schedWeekdays" type="checkbox" checked>
+              Weekdays only (Mon–Fri)
+            </label>
+          </fieldset>
 
-function openDialog(cls){
-  editingId = cls ? (cls.cid || cls.id) : null;
-  dlgTitle.textContent = editingId ? 'Edit class session' : 'New class session';
-  clsName.value = (cls && cls.name) || '';
-  const students = (cls && cls.students) || [];
-  clsStudents.value = students.join('\n');
-  const sched = (cls && cls.schedule) || {};
-  schedEnabled.checked = !!sched.enabled;
-  schedStart.value = sched.start || '';
-  schedEnd.value = sched.end || '';
-  schedWeekdays.checked = !!sched.weekdays_only;
-  dlgDelete.style.display = editingId ? 'inline-flex' : 'none';
-  dialogEl.showModal();
-}
+          <footer style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">
+            <button type="button" id="cancelDialog">Cancel</button>
+            <button type="submit">Save session</button>
+          </footer>
+        </form>
+      </article>
+    </dialog>
 
-async function saveDialog(){
-  const body = {
-    id: editingId,
-    name: clsName.value,
-    students: clsStudents.value,
-    schedule: {
-      enabled: schedEnabled.checked,
-      start: schedStart.value,
-      end: schedEnd.value,
-      weekdays_only: schedWeekdays.checked,
-    },
-  };
-  const res = await fetch('/api/classes/save', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(body),
-  });
-  if(res.ok){
-    dialogEl.close();
-    await loadSessions();
-  }
-}
+    <script>
+      const sessionsList   = document.getElementById('sessionsList');
+      const emptyState     = document.getElementById('emptyState');
+      const newSessionBtn  = document.getElementById('newSessionBtn');
+      const emptyNewBtn    = document.getElementById('emptyNewBtn');
+      const sessionDialog  = document.getElementById('sessionDialog');
+      const dialogTitle    = document.getElementById('dialogTitle');
+      const sessionForm    = document.getElementById('sessionForm');
+      const sessionIdInput = document.getElementById('sessionId');
+      const sessionName    = document.getElementById('sessionName');
+      const sessionStudents= document.getElementById('sessionStudents');
+      const schedEnabled   = document.getElementById('schedEnabled');
+      const schedStart     = document.getElementById('schedStart');
+      const schedEnd       = document.getElementById('schedEnd');
+      const schedWeekdays  = document.getElementById('schedWeekdays');
+      const cancelDialog   = document.getElementById('cancelDialog');
 
-async function deleteDialog(){
-  if(!editingId) return;
-  const res = await fetch('/api/classes/delete', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({id: editingId}),
-  });
-  if(res.ok){
-    dialogEl.close();
-    await loadSessions();
-  }
-}
+      function openDialog(mode, session) {
+        if (mode === 'new') {
+          dialogTitle.textContent = 'New class session';
+          sessionIdInput.value = '';
+          sessionName.value = '';
+          sessionStudents.value = '';
+          schedEnabled.checked = false;
+          schedStart.value = '';
+          schedEnd.value = '';
+          schedWeekdays.checked = true;
+        } else {
+          dialogTitle.textContent = 'Edit class session';
+          sessionIdInput.value = session.id || session.cid || '';
+          sessionName.value = session.name || '';
+          sessionStudents.value = (session.students || []).join('\n');
+          const sched = session.schedule || {};
+          schedEnabled.checked = !!sched.enabled;
+          schedStart.value = sched.start || '';
+          schedEnd.value = sched.end || '';
+          schedWeekdays.checked = !!sched.weekdays_only;
+        }
+        sessionDialog.showModal();
+      }
 
-newClassBtn.addEventListener('click', ()=>openDialog(null));
-dlgCancel.addEventListener('click', ()=>dialogEl.close());
-dlgSave.addEventListener('click', saveDialog);
-dlgDelete.addEventListener('click', deleteDialog);
+      function closeDialog() {
+        sessionDialog.close();
+      }
 
-loadSessions();
-</script>
-</body>
+      async function loadSessions() {
+        sessionsList.innerHTML = '';
+        const res = await fetch('/api/classes');
+        if (!res.ok) {
+          emptyState.hidden = false;
+          sessionsList.innerHTML = '';
+          return;
+        }
+        const j = await res.json();
+        const classes = j.classes || [];
+        if (!classes.length) {
+          emptyState.hidden = false;
+          return;
+        }
+        emptyState.hidden = true;
+
+        for (const c of classes) {
+          const card = document.createElement('article');
+          const active = !!c.active;
+          const count = c.student_count || (c.students ? c.students.length : 0);
+          const sched = c.schedule || {};
+          let schedText = 'No schedule';
+          if (sched.enabled && (sched.start || sched.end)) {
+            const span = [];
+            if (sched.start) span.push(sched.start);
+            if (sched.end) span.push('– ' + sched.end);
+            schedText = (sched.weekdays_only ? 'Weekdays ' : '') + span.join(' ');
+          }
+
+          card.innerHTML = `
+            <header>
+              <h3 style="margin-bottom:4px;">${c.name || c.id}</h3>
+              <div>
+                <span class="badge ${active ? 'badge-active' : 'badge-inactive'}">
+                  ${active ? 'Active' : 'Inactive'}
+                </span>
+                <span class="badge badge-count">
+                  ${count} student${count === 1 ? '' : 's'}
+                </span>
+              </div>
+            </header>
+            <p class="muted" style="margin-top:8px;">${schedText}</p>
+            <div class="card-footer">
+              <a href="/teacher/session/${encodeURIComponent(c.id || c.cid)}" role="button">Open</a>
+              <button type="button" data-action="edit">Edit</button>
+              <button type="button" data-action="delete" class="secondary">Delete</button>
+            </div>
+          `;
+
+          const [openBtn, editBtn, deleteBtn] = card.querySelectorAll('.card-footer > *');
+          editBtn.addEventListener('click', () => openDialog('edit', c));
+          deleteBtn.addEventListener('click', async () => {
+            if (!confirm('Delete this class session?')) return;
+            const resp = await fetch('/api/classes/delete', {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({id: c.id || c.cid})
+            });
+            if (resp.ok) {
+              await loadSessions();
+            }
+          });
+
+          sessionsList.appendChild(card);
+        }
+      }
+
+      newSessionBtn.addEventListener('click', () => openDialog('new'));
+      emptyNewBtn.addEventListener('click', () => openDialog('new'));
+      cancelDialog.addEventListener('click', closeDialog);
+
+      sessionForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const payload = {
+          id: sessionIdInput.value || '',
+          name: sessionName.value,
+          students: sessionStudents.value,
+          schedule: {
+            enabled: schedEnabled.checked,
+            start: schedStart.value,
+            end: schedEnd.value,
+            weekdays_only: schedWeekdays.checked
+          }
+        };
+        const resp = await fetch('/api/classes/save', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(payload)
+        });
+        if (resp.ok) {
+          closeDialog();
+          await loadSessions();
+        }
+      });
+
+      loadSessions();
+    </script>
+  </body>
 </html>
